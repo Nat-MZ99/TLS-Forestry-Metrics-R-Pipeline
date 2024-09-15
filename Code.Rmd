@@ -1,0 +1,1320 @@
+---
+title: "Processamento de nuvens TLS"
+output: html_document
+date: "2024-09-12"
+---
+
+# Processamento de nuvens TLS - Segmentação de árvore individual, extração de dap e altura total.
+
+## Instalar pacotes necessários
+
+```{r}
+install.packages("FORTLS")
+install.packages("lidR")
+install.packages("raster")
+install.packages("sf")
+install.packages("future")
+install.packages("rlang")
+install.packages("dplyr")
+install.packages("devtools")
+install.packages("EnvStats")
+library(devtools)
+devtools::install_github("lmterryn/ITSMe", build_vignettes = TRUE)
+devtools::install_github("tiagodc/TreeLS")
+```
+
+## Carregar pacotes necessários
+
+```{r}
+library(FORTLS)
+library(lidR)
+library(raster)
+library(sf)
+library(future)
+library(TreeLS)
+library(rlang)
+library(dplyr)
+library(ITSMe)
+library(tidyr)
+library(EnvStats)
+```
+
+## 1. Processamento inicial
+
+### 1.1. Checagem da nuvem LiDAR
+
+```{r}
+# DEFINIR DIRETÓRIO
+dir = "D:/NCSU"
+
+# LER CTG DA NUVEM DE PONTOS
+ctg <- readLAScatalog(paste0(dir, "/nuve"))
+
+# LAS CHECK CTG
+las_check(ctg)
+```
+
+### 1.2. Definição e criação dos diretórios de entrada e saída
+
+```{r}
+#INPUT PATH COM OS ARQUIVOS LAS
+path.las = "D:/NCSU/tiles" #path with las files
+output.path = "D:/NCSU/" #output path
+
+#OUPUT PATHS
+{
+  path.temp <- paste0(output.path, "/processos/temp") # Path for temporary files
+  path.las.ground <- paste0(output.path, "/processos/LAS_ground") # Path for las with ground returns
+  path.dtm <- paste0(output.path, "/processos/dtm") # Path for digital terrain model (aka digital elevation model)
+  path.dsm <- paste0(output.path, "/processos/dsm") # Path for digital surface model
+  path.chm <- paste0(output.path, "/processos/chm") # Path for canopy height model
+  path.las.norm <- paste0(output.path, "/processos/LAS_norm") # Path for normalized las file
+  path.las.clean <- paste0(output.path, "/processos/LAS_clean") # Path for cleaned las file
+}
+
+# Verifica se os diretórios existem e, se não, os cria
+{
+  if (!file.exists(paste0(output.path, "/processos"))) dir.create(paste0(output.path, "/processos"))
+  if (!file.exists(path.temp)) dir.create(path.temp)
+  if (!file.exists(path.las.ground)) dir.create(path.las.ground)
+  if (!file.exists(path.dtm)) dir.create(path.dtm)
+  if (!file.exists(path.dsm)) dir.create(path.dsm)
+  if (!file.exists(path.chm)) dir.create(path.chm)
+  if (!file.exists(path.las.norm)) dir.create(path.las.norm)
+  if (!file.exists(path.las.clean)) dir.create(path.las.clean)
+}
+
+# Vetor de arquivos que serão processados
+files.las = list.files(path.las, pattern = "\\.laz") ### las files names
+```
+
+### 1.3. Loop para gerar DTM DSM CHM LASNORM LASGROUND
+
+```{r}
+##LOOPING to processing all las files into the path.las
+for(i in 1:length(files.las)){
+  
+  #file name
+  name = files.las[i] 
+  
+  ##--------------------------------------------------------------------------------##
+  # 1) Thinning Lidar cloud
+  #Get a reduced point cloud which speeds up processing for the lasground process
+  
+  func_1 = "C:/LAStools/bin/lasthin" #lastools path with the function that will be used
+  
+  #input
+  input_1 = paste("-i", file.path(path.las, name))
+  
+  #output
+  output_1 = paste("-o", file.path(path.temp, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_1_thin_0p1lowest.las")))
+  
+  cmd = paste(func_1, input_1, output_1, "-step 0.1 -lowest")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #2) Classifing ground returns 
+  #Calculate a course DEM, which interpolates over all the smal variation. 
+  #Produces the better DEM if ground points are very low.
+  
+  func_2 = "C:/LAStools/bin/lasground_new" #lastools path with the function that will be used
+  
+  #input
+  input_2 = gsub("-o", "-i", output_1)
+  
+  #output
+  output_2 = paste("-o", file.path(path.temp, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_2_ground_city.las")))
+  
+  cmd = paste(func_2, input_2, output_2, "-nature")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #3) Writes out just the ground points
+  
+  func_3 = "C:/LAStools/bin/las2las" #lastools path with the function that will be used
+  
+  #input
+  input_3 = gsub("-o", "-i", output_2)
+  
+  #output
+  output_3 = paste("-o", file.path(path.las.ground, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_3_ground_city.las")))
+  
+  
+  cmd = paste(func_3, input_3, output_3, "-keep_classification 2")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #4) Create DTM using city ground points
+  #Creates a raster using the reduced point cloud, required to not hit freeware license limitations.
+  
+  func_4 = "C:/LAStools/bin/las2dem" #lastools path with the function that will be used
+  
+  #input
+  input_4 = gsub("-o", "-i", output_3)
+  
+  #output
+  output_4 = paste("-o", file.path(path.dtm, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_4_dem_city.tif")))
+  
+  cmd = paste(func_4, input_4, output_4, "-step 0.5 -elevation")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #5) Clean out any error points below ground
+  
+  func_5 = "C:/LAStools/bin/lasheight" #lastools path with the function that will be used
+  
+  #input
+  input_5 = input_1 #raw las
+  
+  input_5b = strsplit(output_3, split = " ")[[1]][2] #ground returns
+  
+  #output
+  output_5 = paste("-o", file.path(path.temp, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_5_all_dropbelow_ground.las")))
+  
+  cmd = paste(func_5, input_5, "-ground_points", input_5b, output_5, "-drop_below 0")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #6) Applying lasnoise to create DSM 
+  
+  func_6 = "C:/LAStools/bin/lasnoise" #lastools path with the function that will be used
+  
+  #input
+  input_6 = input_1
+  
+  #output
+  output_6 = paste("-o", file.path(path.temp, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_6_lasnoise.las")))
+  
+  cmd = paste(func_6, input_6, output_6, "-drop_z_above 950 -step_xy 1 -step_z 1 -isolated 10 -remove_noise")
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #7) Thinning "lasnoise.las" in highest values to produce dsm 
+  
+  func_7 = "C:/LAStools/bin/lasthin" #lastools path with the function that will be used
+  
+  #input
+  input_7 = gsub("-o", "-i", output_6)
+  
+  #output
+  output_7 = paste("-o", file.path(path.temp, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_7_0p5highest.las")))
+  
+  cmd = paste(func_7, input_7, output_7, "-step 0.5 -highest")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #8) Create DSM
+  
+  func_8 = "C:/LAStools/bin/las2dem" #lastools path with the function that will be used
+  
+  #input
+  input_8 = gsub("-o", "-i", output_7)
+  
+  #output
+  output_8 = paste("-o", file.path(path.dsm, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_8_dsm.tif")))
+  
+  cmd = paste(func_8, input_8, output_8, "-step 0.5 -elevation")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #9) Drop out returns above the dsm
+  
+  func_9 = "C:/LAStools/bin/lasheight" #lastools path with the function that will be used
+  
+  #input
+  input_9 = gsub("-o", "-i", output_5)
+  
+  input_9b = strsplit(output_7, split = "\\ ")[[1]][2]
+  
+  #output
+  output_9 = paste("-o", file.path(path.las.clean, 
+                                   paste0(strsplit(name, "\\.")[[1]][1]
+                                          ,"_9_lasclean.las")))
+  
+  cmd = paste(func_9, input_9, "-ground_points", input_9b, output_9, "-drop_above 0")  
+  system(cmd)
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #10) create LAS normalized
+  
+  func_10 = "C:/LAStools/bin/lasheight" #lastools path with the function that will be used
+  
+  #input
+  input_10 = gsub("-o", "-i", output_9) #las clean
+  
+  input_10b = strsplit(output_3, split = "\\ ")[[1]][2] #las ground
+  
+  #output
+  output_10 = paste("-o", file.path(path.las.norm, 
+                                    paste0(strsplit(name, "\\.")[[1]][1]
+                                           ,"_10_lasnorm.las")))
+  
+  cmd = paste(func_10, input_10, "-ground_points", input_10b, output_10, "-replace_z")  
+  system(cmd)
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #11) Thinning highest values of lasnorm to create canopy height model (CHM)
+  
+  func_11 = "C:/LAStools/bin/lasthin" #lastools path with the function that will be used
+  
+  #input
+  input_11 = gsub("-o", "-i", output_10)
+  
+  #output
+  output_11 = paste("-o", file.path(path.temp, 
+                                    paste0(strsplit(name, "\\.")[[1]][1]
+                                           ,"_11_0p5highest_norm.las")))
+  
+  cmd = paste(func_11, input_11, output_11, "-step 0.5 -highest")  
+  system(cmd)
+  
+  ##--------------------------------------------------------------------------------##
+  
+  
+  ##--------------------------------------------------------------------------------##
+  #12) Create CHM
+  
+  func_12 = "C:/LAStools/bin/las2dem" #lastools path with the function that will be used
+  
+  #input
+  input_12 = gsub("-o", "-i", output_11)
+  
+  #output
+  output_12 = paste("-o", file.path(path.chm, 
+                                    paste0(strsplit(name, "\\.")[[1]][1]
+                                           ,"_12_chm.tif")))
+  
+  cmd = paste(func_12, input_12, output_12, "-step 0.5 -elevation")  
+  system(cmd)
+  ##--------------------------------------------------------------------------------##
+  
+  file.remove(file.path(path.temp, list.files(path.temp)))
+  
+  #print i
+  print(paste0(i, "/", length(files.las)))
+  
+} #end looping
+```
+
+### 1.4. Criar mosaicos, plotar e salvar DSM, DTM e CHM
+
+```{r}
+# Definir a pasta com os arquivos
+pasta <- paste0(output.path, "/processos2")
+
+# Função para criar mosaico
+criar_mosaico <- function(sub_pasta) {
+  # Listar os arquivos .tif no subpastaetório
+  arquivos <- list.files(paste0(pasta, "/", sub_pasta), pattern = "\\.tif$", full.names = TRUE)
+  
+  # Carregar os rasters
+  rasters <- lapply(arquivos, raster)
+  
+  # Criar o mosaico
+  mosaico <- do.call(merge, rasters)
+  
+  return(mosaico)
+}
+
+# Criar e plotar o mosaico DSM
+dsm <- criar_mosaico("dsm")
+x11()
+plot(dsm)
+
+# Criar e plotar o mosaico DTM
+dtm <- criar_mosaico("dtm")
+x11()
+plot(dtm)
+
+# Criar e plotar o mosaico CHM
+chm <- criar_mosaico("chm")
+x11()
+plot(chm)
+
+# Opcional: Salvar os mosaicos
+writeRaster(dsm, paste0(pasta, "/mosaico_dsm.tif"))
+writeRaster(dtm, paste0(pasta, "/mosaico_dtm.tif"))
+writeRaster(chm, paste0(pasta, "/mosaico_chm.tif"))
+```
+
+### 1.5. Abrir e checar o catalog da nuvem normalizada
+
+```{r}
+ctg <- readLAScatalog(paste0(dir, "/processos2/LAS_norm"), filter = "-drop_z_below 0")
+las_check(ctg)
+```
+
+### 1.6. Salvar ctg tiles (para futuras investigações, se necessário)
+
+```{r}
+st_ctg <- ctg$geometry
+df_ctg <- data.frame(filename = ctg$filename)
+df_ctg$geometry <- st_geometry(st_ctg)
+st_write(df_ctg, paste0(dir, "/processos2/tiles.shp"))
+```
+
+## 2. Processamento
+
+### 2.1 TreeLS + Segmentação de árvores (em .las separados)
+
+#### 2.1.1. Definir diretórios
+
+```{r}
+## Defina o diretório
+dir <- "D:/NCSU"
+pasta <- paste0(dir, "/parc_boa/TreeLS")
+
+## Ler ctg da nuvem de pontos registrada
+ctg <- readLAScatalog(paste0(dir, "/processos2/LAS_norm/"))
+
+## Defina a pasta para salvar os resultados
+pasta_results <- paste0(pasta, "/results")
+if (!dir.exists(pasta_results)) {
+  dir.create(pasta_results, recursive = TRUE)
+}
+```
+
+#### 2.1.2. Ajustar inputs e carregar arquivos necessários
+
+```{r}
+## Salvar nuvens processadas? 1 = sim; 0 = não
+salvar_nuvens <- 0
+
+## Segmentar árvores em arquivos LAS separados? 1 = sim; 0 = não
+seg_arv <- 0
+
+## Inicialize um contador para nomes de arquivo únicos
+contador <- 1
+
+## Inicialize um contador global para TreeID
+global_tree_id_counter <- 1
+
+## Carregue o shapefile com os polígonos
+shp_file <- st_read(paste0(dir, "/shp/parc_boa/fileiras_parc_boa.shp"))
+plot(shp_file)
+```
+
+#### 2.1.3. Loop de processamento
+
+```{r}
+## Loop - polígonos
+for (i in 1:nrow(shp_file)) {
+  poly <- shp_file[i, ]
+  tls <- clip_roi(ctg, poly)
+  
+  ### Executar o tratamento nos dados LAS (TreeLS)
+  tls <- tlsNormalize(tls, keep_ground = F)
+  thin <- tlsSample(tls, smp.voxelize(0.02))
+  map <- treeMap(thin, map.hough(min_density = 0.1), 0)
+  tls <- treePoints(tls, map, trp.crop())
+  tls <- stemPoints(tls, stm.hough())
+  seg <- stemSegmentation(tls, sgt.ransac.circle(n = 20))
+  inv <- tlsInventory(tls, d_method = shapeFit())
+  
+  ### Atualize o TreeID do df para ser único globalmente
+  seg$TreeID <- seg$TreeID + global_tree_id_counter
+  inv$TreeID <- inv$TreeID + global_tree_id_counter
+  
+  ### Salve o resultado com um nome diferente
+  write.csv2(seg, file.path(pasta_results, paste0("raios4_", contador, ".csv")))
+  write.csv2(inv, file.path(pasta_results, paste0("inv4_", contador, ".csv")))
+  
+  ### Salvar nuvem processada
+  if (salvar_nuvens == 1) {
+  tls <- las_rescale(tls, 5e-08, 5e-08, 2.5e-08)
+  writeLAS(tls, paste0(dir, "/parc_boa/fileiras/fileira", contador,".las"))
+  }
+  ### Segmentação de árvores em arquivos LAS separados
+  if (seg_arv == 1) {
+    ##### Salvar nuvem processada sem solo
+    tls <- classify_ground(tls, algorithm = csf())
+    tls <- tls[tls$Classification == 0]
+    writeLAS(tls, paste0(dir, "/parc_boa/fileiras/fileira_ng_", contador,".las"))
+    
+    ##### Criar objeto com IDs únicos
+    unique_TreeID <- unique(seg$TreeID)
+    
+    ##### Atualizar o TreeID da nuvem para ser único globalmente
+    tls@data$TreeID <- tls@data$TreeID + global_tree_id_counter
+    
+    ##### Loop para salvar árvores
+    for (tree_id in unique_TreeID) {
+      arv <- tls[tls@data$TreeID == tree_id, ]
+      writeLAS(arv, paste0(dir, "/parc_boa/arvs_ng/", contador, "_", tree_id, ".las"))
+    }
+  }
+  ### Incrementar o contador para o próximo arquivo
+  contador <- contador + 1
+  global_tree_id_counter <- max(seg$TreeID) + 1
+}
+```
+
+#### 2.1.4. Unir e salvar resultados
+
+```{r}
+## Unir data frames
+### Lista todos os arquivos CSV na pasta
+arquivos_csv <- list.files(pasta_results, pattern = "inv.*\\.csv$", full.names = TRUE)
+
+### Inicializa uma lista para armazenar os data frames
+lista_dataframes <- list()
+
+### Loop para ler cada arquivo CSV e adicionar à lista
+for (arquivo in arquivos_csv) {
+  df <- read.csv2(arquivo, header = TRUE)
+  lista_dataframes[[arquivo]] <- df
+}
+
+### Unir os data frames usando bind_rows
+resultado <- bind_rows(lista_dataframes)
+
+### Exibir o resultado
+print(resultado)
+
+### Salvar o resultado como um único arquivo CSV
+write.csv2(resultado, file = paste0(pasta_inv,"inventário",".csv"), row.names = FALSE)
+
+### Resultado
+resultado_sf <- st_as_sf(resultado, coords = c("X", "Y"))
+st_write(resultado_sf, paste0(pasta, "/daps_ht.shp"))
+write.csv2(resultado1, paste0(pasta, "/daps.csv"))
+plot(resultado1)
+
+## Interseção arvs
+### Carregue os shapefiles
+shp1 <- resultado_sf
+shp2 <- st_read(paste0(dir, "/shp/arv censo/censo2_buffer.shp"))
+shp1 <- st_set_crs(shp1, 31982)
+shp2 <- st_set_crs(shp2, 31982)
+x11()
+plot(shp1)
+plot(shp2)
+
+### Realize a interseção
+intersecao <- st_intersection(shp1, shp2)
+x11()
+plot(intersecao)
+
+### Criar data frame
+df <- as.data.frame(intersecao)
+df$dap.est <- df$Radius * 200
+write.csv2(df, paste0(pasta, "/result_inv_dap_ht.csv"))
+```
+
+### 2.2. ITSMe
+
+#### 2.2.1. Definir diretórios
+
+```{r}
+## Definir o diretório da pasta onde serão salvos os arquivos
+pasta <- paste0(dir, "/parc_boa/ITSMe")
+
+### Diretório contendo as nuvem de pontos de árvores individuais
+diretorio <- paste0(dir,"/parc_boa/arvs_ng/")
+```
+
+#### 2.2.2. Loop de processamento
+
+```{r}
+### Obter uma lista de arquivos no diretório
+files <- list.files(path = diretorio, pattern = "\\.las$", full.names = TRUE)
+
+### Criar uma lista vazia para armazenar os resultados de cada arquivo
+results_list <- list()
+
+### Loop através de cada arquivo
+for (file in files) {
+  tryCatch({
+    ### Ler o arquivo da nuvem de pontos
+    pc_tree <- read_tree_pc(path = file)
+    XYZ_pos <- tree_position_pc(pc = pc_tree)
+    H <- tree_height_pc(pc = pc_tree)
+    
+    # Definir o nome do arquivo de plot
+    plot_filename <- paste0(pasta,"/plots2/arv_", sub(".*/[^_]*_([0-9]+)\\.las", "\\1", file), ".png")
+    
+    # Salvar o plot dbh_pc como PNG
+    png(filename = plot_filename)
+    out_dbh <- dbh_pc(pc = pc_tree, plot = TRUE, thresholdR2 = 0.1)
+    dev.off()
+    #C_out <- classify_crown_pc(
+    #  thresholdbranch = 5,
+    #  pc = pc_tree, minheight = 1, buttress = FALSE,
+    #  thresholdR2 = 0.1,
+    #  plot = FALSE)
+    # thresholdR2 (padrão = 0,001) e slice_thickness (padrão = 0,06 m - ao menos 20 cm p UAV-LiDAR)
+    #crown_pc <- C_out$crownpoints
+    #pdf(paste0(pasta,"/plots/", sub(".*/(\\d+)\\.las", "\\1", file), "crown area.pdf"))
+    #c_area <- projected_area_pc(pc = crown_pc, plot = FALSE)
+    #dev.off()
+    # c_vol <- alpha_volume_pc(pc = crown_pc, plot = FALSE)
+    df1 <- data.frame(
+      dbh = out_dbh$dbh,
+      fdbh = out_dbh$fdbh,
+      X = XYZ_pos[1],
+      Y = XYZ_pos[2],
+      ht = H$h
+      #, crown_area = c_area$pa
+      #, crown_volume = c_vol
+      )
+    ### Armazenar os resultados na lista de resultados
+    results_list[[file]] <- df1
+  }, error = function(e) {
+    ### Você pode adicionar um aviso ou log do erro se desejar
+    warning(paste("Ignorando erro no loop para a árvore", file, ":", e$message))
+  })
+}
+```
+
+#### 2.2.3. Unir e salvar resultados
+
+```{r}
+### Combinar os resultados em um único data frame
+combined_df <- do.call(rbind, Map(function(x, y) { y$file_path <- x; y }, names(results_list), results_list))
+
+## Formatar df
+print(combined_df)
+combined_df$id <- sub(".*/[^_]*_([0-9]+)\\.las", "\\1", combined_df$file_path)
+combined_df <- subset(combined_df, select = -file_path)
+combined_df
+
+## Relacionar com o censo espacialmente
+shp1 <- st_as_sf(combined_df, coords = c("X", "Y"))
+x11()
+plot(shp1)
+shp2 <- st_read(paste0(dir, "/shp/arv censo/censo2_buffer.shp"))
+shp1 <- st_set_crs(shp1, 31982)
+shp2 <- st_set_crs(shp2, 31982)
+intersecao2 <- st_intersection(shp1, shp2)
+x11()
+plot(intersecao2)
+df3 <- as.data.frame(intersecao2)
+df3$dbh <- df3$dbh * 100
+df3$fdbh <- df3$fdbh * 100
+
+## Salvar resultados
+write.csv2(df3, paste0(pasta,"/result_ng.csv"))
+
+## OU Relacionar por ID (TreeLS)
+#df$id <- df$TreeID
+#df_merged2 <- merge(df, combined_df, by = "id", all = FALSE)
+
+## Salvar resultados
+#write.csv2(df3, paste0(pasta,"/result_ng.csv"))
+```
+
+### 2.3. TreeQSM
+
+#### 2.3.1. Tutorial para instalação do Matlab
+
+Free-trial: <https://www.mathworks.com/campaigns/products/trials.html>
+
+ajdwiadwuab
+
+#### 2.3.2. Definir diretórios
+
+```{r}
+dir <- "D:/NCSU"
+pasta <- paste0(dir, "/parc_boa/TreeQSM/")
+Sys.setenv(MATLAB="C:/Program Files/MATLAB/R2023b/bin")
+
+# Defina os caminhos para resultsPath e lasFilesPath
+results_path <- "D:/NCSU/parc_boa/TreeQSM/aaa/" # Caminho para salvar os resultados
+las_files_path <- "D:/NCSU/parc_boa/arvs_ng/" # Caminho onde estão as árvores individuais .las
+```
+
+#### 2.3.3. Executar scripts
+
+```{r}
+{
+  if (!dir.exists(results_path)) {
+    dir.create(results_path, recursive = TRUE)
+    message("A pasta results_path foi criada.")
+  }
+  command <- paste(
+    "matlab -nodesktop -nosplash -logfile matlab.log -wait -r \"",
+    "try, addpath('", pasta, "'); Inicial, ", 
+    "catch ME, disp(getReport(ME)), exit(1), end, exit\"",
+    sep=""
+  ) # Ajuste inicial
+  system(command)
+  command2 <- paste(
+    "matlab -nodesktop -nosplash -logfile matlab.log -wait -r \"",
+    "try, addpath('", pasta, "'); run_treeqsm('", results_path, "', '", las_files_path, "'), ",
+    "catch ME, disp(getReport(ME)), end, exit\"",
+    sep=""
+  ) # TreeQSM
+  system(command2)
+}
+```
+
+#### 2.3.4. Unir e salvar resultados
+
+```{r}
+### Definir a pasta onde estão os arquivos .txt
+pasta <- paste0(dir, "/parc_boa/TreeQSM/src/results/")
+
+### Listar todos os arquivos .txt no diretório
+arquivos_txt <- list.files(pasta, pattern = "\\.txt$", full.names = TRUE)
+  
+### Inicializar uma lista para armazenar os data frames
+lista_dfs <- list()
+
+### Função para processar cada linha do arquivo
+processar_linha <- function(linha, camada_id) {
+  partes <- strsplit(linha, "\t")[[1]]  # Dividir a linha pelo separador de tabulação
+  nome_variavel <- partes[1]  # Nome da variável é a primeira parte
+  valor <- as.numeric(partes[2])  # O valor é a segunda parte, convertido para numérico
+    
+  # Criar um data frame com uma única linha contendo a variável e seu valor
+  df <- data.frame(variavel = nome_variavel, valor = valor, camada_id = camada_id)
+  return(df)
+}
+  
+### Loop sobre cada arquivo .txt
+for (arquivo in arquivos_txt) {
+  # Extrair os números do nome do arquivo usando expressões regulares
+  camada_id <- sub("^[^_]*_([0-9]+)_.*$", "\\1", basename(arquivo))
+  
+  # Ler todas as linhas do arquivo
+  linhas <- readLines(arquivo)
+  
+  # Processar cada linha
+  dfs <- lapply(linhas, processar_linha, camada_id)
+  
+  # Combinar os data frames em uma única lista
+  lista_dfs <- c(lista_dfs, dfs)
+}
+  
+### Combinar todos os data frames em um único data frame
+dados_combinados <- bind_rows(lista_dfs)
+
+dados_organizados <- dados_combinados %>%
+  pivot_wider(names_from = variavel, values_from = valor)
+  
+dados_organizados <- dados_organizados %>%
+  rename(id = camada_id)
+
+### Intercesao por id (ITSMe)
+df4 <- read.csv2(paste0(dir,"/parc_boa/ITSMe/result_r2_0,1.csv")) # Arquivo resultado ITSMe
+df_merged <- merge(df4, dados_organizados, by = "id", all = FALSE)
+df_merged <- subset(df_merged, select = -geometry, -X)
+write.csv2(df_merged, paste0(dir,"/parc_boa/TreeQSM/result-TreeLS.csv"))
+```
+
+### 2.4. TreeQSM + RTwig (em construção)
+
+#### 2.4.1. Definir diretórios
+
+```{r}
+
+```
+
+#### 2.4.2. Loop de processamento
+
+```{r}
+## Import QSM
+qsm <- import_qsm(paste0(dir, "/parc_boa/TreeQSM/src/results/QSM_1_2_t1_m1.mat"))
+  
+## Real Twig Main Steps
+cylinder <- qsm$cylinder
+cylinder <- update_cylinders(cylinder)
+cylinder <- correct_radii(cylinder, twigRad = 4.23)
+  
+## Smooth QSM
+cylinder2 <- smooth_qsm(cylinder)
+  
+## Plot QSM
+plot_qsm(cylinder)
+qsm_summary(cylinder2)
+```
+
+#### 2.4.3. Unir e salvar resultados
+
+```{r}
+```
+
+### 2.5. 3DFin (em construção)
+
+Pode ser executado standlone, neste caso, pular para "2.5.3. Unir e salvar resultados"
+
+#### 2.4.1. Definir diretórios
+
+```{r}
+dir <- "D:/NCSU"
+pasta <- paste0(dir, "/parc_boa/TreeQSM/")
+Sys.setenv(MATLAB="C:/Program Files/MATLAB/R2023b/bin")
+
+# Defina os caminhos para resultsPath e lasFilesPath
+results_path <- "D:/NCSU/parc_boa/TreeQSM/aaa/" # Caminho para salvar os resultados
+las_files_path <- "D:/NCSU/parc_boa/arvs_ng/" # Caminho onde estão as árvores individuais .las
+
+## Definir a pasta onde serão salvos os resultados
+pasta <- paste0(dir, "/parc_boa/3DFin/res")
+```
+
+#### 2.4.2. Loop de processamento
+
+#### 2.4.3. Unir e salvar resultados
+
+```{r}
+## Unir data frames
+### Lista todos os arquivos CSV na pasta
+arquivos_csv <- list.files(pasta, pattern = "\\.csv$", full.names = TRUE)
+  
+### Inicializa uma lista para armazenar os data frames
+lista_dataframes <- list()
+  
+### Loop para ler cada arquivo CSV e adicionar à lista
+for (arquivo in arquivos_csv) {
+  df <- read.csv2(arquivo, header = TRUE)
+  lista_dataframes[[arquivo]] <- df
+}
+  
+### Unir os data frames usando bind_rows
+resultado <- bind_rows(lista_dataframes)
+  
+### Exibir o resultado
+print(resultado)
+  
+### Salvar o resultado como um único arquivo CSV
+write.csv2(resultado, file = paste0(pasta,"merged",".csv"), row.names = FALSE)
+  
+## Formatar df
+resultado$dap <- resultado$DBH * 100
+  
+## Relacionar com o censo espacialmente
+shp1 <- st_as_sf(resultado, coords = c("X", "Y"))
+x11()
+plot(shp1)
+shp2 <- st_read(paste0(dir, "/shp/arv censo/censo2_buffer.shp"))
+shp1 <- st_set_crs(shp1, 31982)
+shp2 <- st_set_crs(shp2, 31982)
+intersecao2 <- st_intersection(shp1, shp2)
+x11()
+plot(intersecao2)
+df3 <- as.data.frame(intersecao2)
+  
+## Salvar resultados
+write.csv2(df3, paste0(pasta,"/result.csv"))
+```
+
+### 2.6. TreeISO
+
+#### 2.6.1. Definir diretórios
+
+```{r}
+# Definir diretório de trabalho
+dir <- "D:/NCSU/parc_boa/TreeISO/"
+
+# Caminho para a pasta com os arquivos a serem processados
+pasta <- "D:/NCSU/parc_boa/fileiras/ng/"
+
+# Caminho para a pasta de saída
+pasta_saida_base <- "D:/NCSU/parc_boa/TreeISO/"
+
+# Caminho para o executável do CloudCompare
+cloudcompare_executavel <- "\"C:/Program Files/CloudCompare/CloudCompare.exe\""
+
+# Dados para treinamento (nº de árvores por nuvem)
+df_treinamento <- read.csv2(paste0(dir,"n_arvs_real.csv"))
+```
+
+#### 2.6.2. Definir inputs
+
+```{r}
+# Contador global para nomes únicos de arquivos
+contador_global <- 0
+
+# Plot (1 = sim, 0 = não)
+plot = 1
+  # Se plot = 1
+  # Define a matriz de rotação (rotation_matrix <- par3d("userMatrix"))
+  rotation_matrix <- matrix(c(
+    0.3084749,  0.95121145, -0.006353367,  0,
+    -0.1974890,  0.07057579,  0.977761269,  0,
+    0.9305060, -0.30036005,  0.209624648,  0,
+    0.0000000,  0.00000000,  0.000000000,  1
+  ), nrow = 4, byrow = TRUE)
+
+# Criar df para salvar os resultados e parâmetros
+df_res <- data.frame(contador_global = integer(),
+                     erro = numeric(),
+                     lambda1 = numeric(),
+                     k1 = integer(),
+                     decimate_resolution1 = numeric(),
+                     lambda2 = numeric(),
+                     k2 = integer(),
+                     max_gap = numeric(),
+                     decimate_resolution2 = numeric(),
+                     rho = numeric(),
+                     vertical_overlap_weight = numeric())
+
+# Criar df para salvar o número de árvores por arquivo por contagem
+df_n_arvs <- data.frame(id_arquivo = df_treinamento$id_arquivo)
+
+# Parâmetros que necessitam serem definidos (limpeza da nuvem)
+{
+  ruido <- 1.1      # Ruído (pts do segmento em relação a densidade de pontos do arquivo) para salvar árvores (padrão: 1.5)
+  altura_rel <- 0.5 # Altura relativa mínima de um segmento (em m) para ser considerado árvore (padrão: 0.5)
+}
+
+# Parâmetros iniciais (TreeIso) que serão ajustados
+{
+  lambda1 <- 1                 # Força da regularização para segmentação inicial (padrão: 1.0)
+  k1 <- 5                         # Vizinhos mais próximos a serem procurados para segmentação inicial (padrão: 5)
+  decimate_resolution1 <- 0.05    # Resolução de pontos decimada (em m) para segmentação inicial (padrão: 0.05)
+  lambda2 <- 10                   # Força da regularização para segmentação intermediária (padrão: 20)
+  k2 <- 20                        # Vizinhos mais próximos a serem procurados para segmentação intermediária (padrão: 20)
+  max_gap <- 2.0                  # Máxima lacuna de pontos (em m) para segmentação intermediária (padrão: 2.0)
+  decimate_resolution2 <- 0.1     # Resolução de pontos decimada (em m) para segmentação intermediária (padrão: 0.1)
+  rho <- 0.5                      # Relação altura/comprimento relativa (usada para detectar não-caule na segmentação final) (padrão: 0.5)
+  vertical_overlap_weight <- 0.5  # Peso da razão de sobreposição vertical para segmentação final (padrão: 0.5)
+}
+```
+
+#### 2.6.3. Definir função fitness (GA)
+
+```{r}
+# FUNÇÃO PARA AJUSTE AUTOMÁTICO DOS PARÂMETROS DO TreeIso~
+fitness <- function(dir, pasta, pasta_saida, cloudcompare_executavel, 
+                    lambda1, k1, decimate_resolution1, 
+                    lambda2, k2, max_gap, decimate_resolution2, 
+                    rho, vertical_overlap_weight, ruido, altura_rel) {
+  
+  # Incrementa o contador global para garantir nomes únicos
+  contador_global <<- contador_global + 1
+  
+  # Define o caminho para a nova pasta de saída
+  pasta_saida <- paste0(pasta_saida_base, "proc_", contador_global, "/")
+  
+  # Verifica se a pasta existe, se não, cria
+  if (!dir.exists(pasta_saida)) {
+    dir.create(pasta_saida, recursive = TRUE)
+  }
+  
+  # Executa o plugin TreeISO do CloudCompare com os parâmetros iniciais
+    # Arredondar parâmetros inteiros
+    k1 <- as.integer(round(k1))
+    k2 <- as.integer(round(k2))
+    #lambda2 <- round(lambda2)
+    
+    # Lista todos os arquivos na pasta
+    arquivos <- list.files(pasta)
+    
+    # Filtra apenas os arquivos .las
+    arquivos_las <- arquivos[grepl("\\.las$", arquivos)]
+    
+    # Loop através de todos os arquivos .las na pasta
+    for (arquivo in arquivos_las) {
+      # Cria o comando para executar o plugin TreeISO do CloudCompare com os parâmetros desejados
+      comando <- sprintf(
+        "%s -SILENT -O -GLOBAL_SHIFT AUTO \"%s\" -TREEISO -LAMBDA1 %f -K1 %d -DECIMATE_RESOLUTION1 %f -LAMBDA2 %f -K2 %d -MAX_GAP %f -DECIMATE_RESOLUTION2 %f -RHO %f -VERTICAL_OVERLAP_WEIGHT %f -C_EXPORT_FMT LAS -SAVE_CLOUDS FILE \"%s\"",
+        cloudcompare_executavel,
+        file.path(pasta, arquivo),
+        lambda1,
+        k1,
+        decimate_resolution1,
+        lambda2,
+        k2,
+        max_gap,
+        decimate_resolution2,
+        rho,
+        vertical_overlap_weight,
+        file.path(pasta_saida, arquivo)
+      )
+      
+      print(comando)
+      
+      # Executa o comando
+      system(comando, minimized = FALSE, show.output.on.console = TRUE, invisible = FALSE)
+      
+    }
+  # Limpa a nuvem e Verifica os resultados
+    # Lista todos os arquivos na pasta
+    arquivos2 <- list.files(pasta_saida)
+    
+    # Filtra apenas os arquivos .las
+    arquivos2_las <- arquivos2[grepl("\\.las$", arquivos2)]
+    
+    # Inicializa um data frame para salvar o número de árvores por arquivo
+    df <- data.frame(id_arquivo = character(),
+                     #arquivo = character(),
+                     n_arvs = integer())
+    
+    # Loop através de todos os arquivos na pasta
+    for (arquivo in arquivos2_las) {
+
+      #Ler las
+      las <- readLAS(paste0(pasta_saida,arquivo))
+        
+      #Densidade de pontos do arquivo
+      densidade_las <- las@header@PHB$`Number of point records`/area(las)
+      
+      # Altura média do arquivo
+      altura_las <- (max(las@data$Z)-min(las@data$Z))
+      
+      # Limpeza do arquivo
+      # Loop sobre os valores únicos de 'final_segs'
+      for (seg in unique(las@data$final_segs)) {
+        # Selecione os arquivos .las que correspondem ao valor 'seg'
+        las_seg <- las[las$final_segs == seg]
+          
+        # Verifique o tamanho do arquivo
+        # Calcula a relação entre o número de pontos do segmento e a densidade de pontos do arquivo
+        pts_seg_rel <- las_seg@header@PHB$`Number of point records`/densidade_las
+        altura_seg_rel <- (max(las_seg@data$Z)-min(las_seg@data$Z))/altura_las
+        
+        # Limpar ruídos
+        # nº de pontos
+        if (pts_seg_rel < ruido) {
+          las <- las[las$final_segs != seg]
+        }
+        # altura
+        if (altura_seg_rel < altura_rel) {
+          las <- las[las$final_segs != seg]
+        }
+      }
+      # Extrai o número do arquivo original
+      num <- gsub("[^0-9]", "", arquivo)
+        
+      # Salva o número de árvores e outras informações em um data frame
+      df <- rbind(df, data.frame(id_arquivo = num, 
+                      #arquivo = arquivo, 
+                      n_arvs = length(unique(las@data$final_segs))))
+      
+      # Salva o arquivo .las limpo
+      writeLAS(las, paste0(pasta_saida,"clean_",arquivo))
+      
+      # Se plot = 1,
+      if (plot == 1) {
+        filename <- paste(paste0(pasta_saida,"clean_",arquivo,".png"))
+        las@data$TreeID <- las@data$final_segs
+        unique_ids <- unique(las$TreeID)
+        colors <- rainbow(length(unique_ids))
+        color_mapping <- colors[as.numeric(factor(las$TreeID))]
+        x <- points3d(las$X, las$Y, las$Z, color = color_mapping, size = 0.5)
+        add_treeIDs(x, las, cex = 1, col='darkgray')
+        par3d(userMatrix = rotation_matrix)
+        rgl::par3d(windowRect = c(100, 100, 1200, 1000))
+        rgl.snapshot(filename, fmt = 'png')
+        rgl.close()
+      }
+    }  
+    # Salva o data frame em um arquivo .csv
+    write.csv2(df, paste0(dir,"n_arvs_TreeIso_",contador_global,".csv"))
+    
+    # Calculo do erro
+      # Merge com df_treinamento
+      df_result <- merge(df, df_treinamento, by = "id_arquivo")
+      
+      # Calcula o erro
+      df_result$SQe <- (df_result$n_arvs - df_result$n_arvs_real)^2
+      erro <- -sum(df_result$SQe)
+    
+    # Atualiza o df_n_arvs com o número de árvores por arquivo por contagem
+    df_n_arvs <- merge(df_n_arvs, df, by = "id_arquivo")
+      
+    # Atualiza o df_res com os resultados e parâmetros
+    df_res <- rbind(df_res, data.frame(contador_global = contador_global,
+                                       erro = erro,
+                                       lambda1 = lambda1,
+                                       k1 = k1,
+                                       decimate_resolution1 = decimate_resolution1,
+                                       lambda2 = lambda2,
+                                       k2 = k2,
+                                       max_gap = max_gap,
+                                       decimate_resolution2 = decimate_resolution2,
+                                       rho = rho,
+                                       vertical_overlap_weight = vertical_overlap_weight))
+    
+    # Salva o df_res em um arquivo .csv
+    write.csv2(df_res, paste0(dir,"df_res_TreeIso.csv"))
+    
+    # Limpa a memória
+    rm(las, las_seg)
+      
+  return(erro)
+}
+```
+
+#### 2.6.4. Executar função
+
+```{r}
+set.seed(123)
+
+# Ajustar parâmetros
+GA <- ga(type = "real-valued", 
+         fitness = function(x) fitness(dir, pasta, pasta_saida, cloudcompare_executavel, 
+                                       x[1], x[2], x[3], 
+                                       x[4], x[5], x[6], x[7], 
+                                       x[8], x[9], ruido, altura_rel),
+         lower = c(0.1,2,0.005,2,5,0.5,0.005,0.1,0.1), upper = c(10,20,0.5,100,100,5,1,0.9,0.9),
+         popSize = 10, maxFitness = 0, monitor = TRUE,
+         suggestions = matrix(c(lambda1, k1, decimate_resolution1, lambda2, k2, max_gap, decimate_resolution2, rho, vertical_overlap_weight), nrow = 1),
+         selection = gareal_tourSelection, maxiter = 2, pmutation = 0.5,
+         names = c("lambda1", "k1", "decimate_resolution1", 
+                   "lambda2", "k2", "max_gap", 
+                   "decimate_resolution2", "rho", 
+                   "vertical_overlap_weight"),
+         optim = TRUE, optimArgs = list(method = "Nelder-Mead", 
+                                        poptim = 0.5,
+                                        pressel = 0.1,
+                                        control = list(fnscale = -1,
+                                                       parscale = c(0.1, 1, 0.001, 1, 1, 0.1, 0.001, 0.1, 0.1),
+                                                       ndeps = c(0.1, 1, 0.001, 1, 1, 0.1, 0.001, 0.1, 0.1))))
+result <- summary(GA)
+```
+
+#### 2.6.5. Salvar árvores individuais
+
+```{r}
+### Inicialize um contador para nomes de arquivo únicos
+contador <- 1
+
+### Lista todos os arquivos na pasta
+arquivos <- list.files(pasta_entrada)
+
+### Filtra apenas os arquivos .las
+arquivos_las <- arquivos[grepl("\\.las$", arquivos) & grepl("clean", arquivos)]
+
+### Loop através de todos os arquivos na pasta
+for (arquivo in arquivos_las) {
+  
+  #Ler las
+  tls <- readLAS(paste0(pasta_entrada, arquivo))
+  unique_TreeID <- unique(tls@data$final_segs)
+
+    ##### Loop para salvar árvores
+    for (tree_id in unique_TreeID) {
+      arv <- tls[tls@data$final_segs == tree_id, ]
+      writeLAS(arv, paste0(pasta_arvs, contador, "_", tree_id, ".las"))
+    }
+  
+  ### Incrementar o contador para o próximo arquivo
+  contador <- contador + 1
+}
+```
+
+### 2.7. ITSMe - Segmentação TreeISO
+
+#### 2.7.1. Definir diretórios
+
+```{r}
+## Definir o diretório da pasta onde serão salvos os arquivos
+dir = "D:/NCSU"
+pasta <- paste0(dir, "/parc_boa/ITSMe/TreeISO/")
+
+### Diretório contendo os arquivos da nuvem de pontos
+diretorio <- paste0(dir,"/parc_boa/TreeISO/arvs2/")
+```
+
+#### 2.7.2. Loop de processamento
+
+```{r}
+### Obter uma lista de arquivos no diretório
+files <- list.files(path = diretorio, pattern = "\\.las$", full.names = TRUE)
+
+### Criar uma lista vazia para armazenar os resultados de cada arquivo
+results_list <- list()
+
+### Loop através de cada arquivo
+for (file in files) {
+  tryCatch({
+    ### Ler o arquivo da nuvem de pontos
+    pc_tree <- read_tree_pc(path = file)
+    XYZ_pos <- tree_position_pc(pc = pc_tree)
+    H <- tree_height_pc(pc = pc_tree)
+    
+    # Definir o nome do arquivo de plot
+    plot_filename <- paste0(pasta,"/plots/arv_", sub(".*/[^_]*_([0-9]+)\\.las", "\\1", file), ".png")
+    
+    # Salvar o plot dbh_pc como PNG
+    png(filename = plot_filename)
+    out_dbh <- dbh_pc(pc = pc_tree, plot = TRUE, thresholdR2 = 0.1)
+    dev.off()
+    #C_out <- classify_crown_pc(
+    #  thresholdbranch = 5,
+    #  pc = pc_tree, minheight = 1, buttress = FALSE,
+    #  thresholdR2 = 0.1,
+    #  plot = FALSE)
+    # thresholdR2 (padrão = 0,001) e slice_thickness (padrão = 0,06 m - ao menos 20 cm p UAV-LiDAR)
+    #crown_pc <- C_out$crownpoints
+    #pdf(paste0(pasta,"/plots/", sub(".*/(\\d+)\\.las", "\\1", file), "crown area.pdf"))
+    #c_area <- projected_area_pc(pc = crown_pc, plot = FALSE)
+    #dev.off()
+    # c_vol <- alpha_volume_pc(pc = crown_pc, plot = FALSE)
+    df1 <- data.frame(
+      dbh = out_dbh$dbh,
+      fdbh = out_dbh$fdbh,
+      X = XYZ_pos[1],
+      Y = XYZ_pos[2],
+      ht = H$h
+      #, crown_area = c_area$pa
+      #, crown_volume = c_vol
+    )
+    ### Armazenar os resultados na lista de resultados
+    results_list[[file]] <- df1
+  }, error = function(e) {
+    ### Você pode adicionar um aviso ou log do erro se desejar
+    warning(paste("Ignorando erro no loop para a árvore", file, ":", e$message))
+  })
+}
+```
+
+#### 2.7.3. Unir e salvar resultados
+
+```{r}
+### Combinar os resultados em um único data frame
+combined_df <- do.call(rbind, Map(function(x, y) { y$file_path <- x; y }, names(results_list), results_list))
+
+## Formatar df
+print(combined_df)
+combined_df$id <- sub("^([0-9]+_[0-9]+)\\.las$", "\\1", gsub(".*/", "", combined_df$file_path))
+combined_df <- subset(combined_df, select = -file_path)
+combined_df
+
+## Relacionar com o censo espacialmente
+shp1 <- st_as_sf(combined_df, coords = c("X", "Y"))
+plot(shp1)
+shp2 <- st_read(paste0(dir, "/shp/arv censo/censo2_buffer.shp"))
+shp1 <- st_set_crs(shp1, 31982)
+shp2 <- st_set_crs(shp2, 31982)
+intersecao2 <- st_intersection(shp1, shp2)
+plot(intersecao2)
+df3 <- as.data.frame(intersecao2)
+df3$dbh <- df3$dbh * 100
+df3$fdbh <- df3$fdbh * 100
+
+## Salvar resultados
+write.csv2(df3, paste0(pasta,"/result2.csv"))
+```
+
+### 2.8. TreeQSM - Segmentação TreeISO
+
+#### 2.8.1. Definir diretórios
+
+```{r}
+## Definir o diretório da pasta onde serão salvos os arquivos
+dir <- "D:/NCSU"
+pasta <- paste0(dir, "/parc_boa/TreeQSM/")
+Sys.setenv(MATLAB="C:/Program Files/MATLAB/R2023b/bin")
+
+# Defina os caminhos para resultsPath e lasFilesPath
+results_path <- "D:/NCSU/parc_boa/TreeQSM_TreeISO/results/" # Caminho para salvar os resultados
+las_files_path <- "D:/NCSU/parc_boa/TreeISO/arvs2/" # Caminho onde estão as árvores individuais .las
+```
+
+#### 2.8.2. Loop de processamento
+
+```{r}
+## Executa os scripts MATLAB
+{
+  if (!dir.exists(results_path)) {
+    dir.create(results_path, recursive = TRUE)
+    message("A pasta results_path foi criada.")
+  }
+  command <- paste(
+    "matlab -nodesktop -nosplash -logfile matlab.log -wait -r \"",
+    "try, addpath('", pasta, "'); Inicial, ", 
+    "catch ME, disp(getReport(ME)), exit(1), end, exit\"",
+    sep=""
+  ) # Ajuste inicial
+  system(command)
+  command2 <- paste(
+    "matlab -nodesktop -nosplash -logfile matlab.log -wait -r \"",
+    "try, addpath('", pasta, "'); run_treeqsm('", results_path, "', '", las_files_path, "'), ",
+    "catch ME, disp(getReport(ME)), end, exit\"",
+    sep=""
+  ) # TreeQSM
+  system(command2)
+}
+```
+
+#### 2.8.3. Unir e salvar resultados
+
+```{r}
+### Definir a pasta onde estão os arquivos .txt
+pasta <- paste0(dir, "/parc_boa/TreeQSM_TreeISO/results/")
+
+### Listar todos os arquivos .txt no diretório
+arquivos_txt <- list.files(pasta, pattern = "\\.txt$", full.names = TRUE)
+
+### Inicializar uma lista para armazenar os data frames
+lista_dfs <- list()
+
+### Função para processar cada linha do arquivo
+processar_linha <- function(linha, camada_id) {
+  partes <- strsplit(linha, "\t")[[1]]  # Dividir a linha pelo separador de tabulação
+  nome_variavel <- partes[1]  # Nome da variável é a primeira parte
+  valor <- as.numeric(partes[2])  # O valor é a segunda parte, convertido para numérico
+  
+  # Criar um data frame com uma única linha contendo a variável e seu valor
+  df <- data.frame(variavel = nome_variavel, valor = valor, camada_id = camada_id)
+  return(df)
+}
+
+### Loop sobre cada arquivo .txt
+for (arquivo in arquivos_txt) {
+  # Extrair os números do nome do arquivo usando expressões regulares
+  camada_id <- sub("^.*?/([0-9]+_[0-9]+)_.*\\.txt$", "\\1", arquivo)
+  
+  # Ler todas as linhas do arquivo
+  linhas <- readLines(arquivo)
+  
+  # Processar cada linha
+  dfs <- lapply(linhas, processar_linha, camada_id)
+  
+  # Combinar os data frames em uma única lista
+  lista_dfs <- c(lista_dfs, dfs)
+}
+
+### Combinar todos os data frames em um único data frame
+dados_combinados <- bind_rows(lista_dfs)
+
+dados_organizados <- dados_combinados %>%
+  pivot_wider(names_from = variavel, values_from = valor)
+
+dados_organizados <- dados_organizados %>%
+  rename(id = camada_id)
+
+### Intercesao por id (ITSMe)
+df4 <- read.csv2(paste0(dir,"/parc_boa/ITSMe/TreeISO/result2.csv")) # Arquivo resultado ITSMe
+df_merged <- merge(df4, dados_organizados, by = "id", all = FALSE)
+df_merged <- subset(df_merged, select = -geometry, -X)
+write.csv2(df_merged, paste0(dir,"/parc_boa/TreeQSM_TreeISO/result-TreeISO.csv"))
+```
